@@ -1,0 +1,261 @@
+TASK DEFINITION – DIALOGUE INTENT CLASSIFICATION (8 CLASSES)
+
+Challenge: Single-label classification of a user's intent from a short
+Russian-language dialogue for the assistant of the fictional "Meridian"
+platform (company "Arcadia"). The classifier must look at the current
+message together with the visible history and pick one of eight routing
+branches. The same short phrase in different dialogues can mean different
+intents.
+
+OBJECTIVE
+Implement `def entrypoint():` (no arguments) that returns a dict mapping
+example id -> prediction:
+    {
+        "<example_id>": {"intent": <label>, "needs_clarification": <bool>},
+        ...
+    }
+
+Requirements:
+1) `intent` is one of 8 labels:
+     greeting, capabilities, gratitude, data_catalog,
+     pivot_table, technical, support, no_rag
+2) `needs_clarification` is a boolean flag, allowed to be True ONLY when
+   `intent == "data_catalog"`. It marks genuine ambiguity between
+   "find catalog objects" and "explain a topic".
+3) Predictions must be produced ONLY from each example's `history` and
+   `text`. Fields `intent`, `needs_clarification`, `rationale`, `tags`,
+   `group_id`, `split` are forbidden as model input.
+4) `history` is a chronological list of {"role": "user"|"assistant",
+   "content": str}. The current user message is in `text` and is NOT
+   duplicated in `history`. Up to 3 previous user and 4 previous
+   assistant turns. Empty history is valid.
+5) Deterministic: no randomness, or seed it if you must.
+
+Output type: dict[str, dict]. No printing, no side effects, no I/O.
+
+
+DATA ACCESS — READ THIS FIRST
+All 160 examples are ALREADY embedded in `helper.py` as a Python string
+variable named `EMBEDDED_EXAMPLES` (JSONL form: one JSON object per line).
+Every example in that string contains ONLY these fields:
+    id, history, text
+
+It does NOT contain gold fields (`intent`, `needs_clarification`) and
+does NOT contain `rationale`, `tags`, `group_id`, `split`. This is
+intentional — predictions must come from `history` + `text` alone.
+
+RULES:
+- DO NOT open, read, or look for `examples.json` at runtime.
+  It does not exist in the sandbox.
+- DO NOT use `open()`, `json.load()`, `pd.read_json()`, `Path.read_text()`
+  or any other file I/O on examples. Everything is already in memory.
+- DO NOT try to reconstruct gold labels. Gold is stored by the judge
+  outside the sandbox; the program cannot see it and must not want to.
+- Use `helper.load_examples()` to get the list of examples, or parse
+  `helper.EMBEDDED_EXAMPLES` directly. Both give the same result.
+- `entrypoint()` must iterate over `helper.load_examples()` and return
+  {id: {"intent": ..., "needs_clarification": ...}}.
+
+Available helpers in `helper.py`:
+- `LABELS`                  -> list of the 8 valid intent names
+- `EMBEDDED_EXAMPLES`       -> str, all 160 examples (id, history, text)
+- `load_examples()`         -> list[dict] parsed from EMBEDDED_EXAMPLES
+- `last_assistant(history)` -> str, last assistant turn, lowercased
+
+Validation reads gold from its own copy of `examples.json` (outside the
+sandbox). The mutating program must never attempt to access it.
+
+
+FITNESS AND VALIDITY
+Fitness = macro-F1 over the 8 intent classes. Each class weighs equally.
+Higher is better. Range [0.0, 1.0].
+
+is_valid = 1 when every prediction is structurally correct:
+- `intent` is one of the 8 labels,
+- `needs_clarification` is a bool and True only for `data_catalog`.
+Otherwise is_valid = 0.
+
+A wrong `intent` still counts as a valid prediction — it just lowers
+fitness. InvalId is reserved for malformed output, not for mistakes.
+
+
+DATASET
+- 160 synthetic hand-labeled examples, 20 per class.
+- 16 train / 4 dev per class (128 train, 32 dev).
+- Same phrase with different histories forms minimal pairs (shared
+  `group_id`), never split across train/dev.
+- Only synthetic data; no real user logs were used.
+- `split` is not available inside the sandbox and must not be used.
+
+
+THE EIGHT INTENTS
+- greeting          — hello or standalone neutral farewell, no work task.
+- capabilities      — question about the assistant itself, its identity
+                      or its abilities.
+- gratitude         — thanks, confirmation that help is finished,
+                      "no further questions".
+- data_catalog      — find tables, marts, cubes, dashboards, views, or
+                      any data object; continue a catalog listing.
+- pivot_table       — explicit request to build or edit a numeric table
+                      with dimensions, filters, or aggregation.
+- technical         — explanations, methodology, errors, access, product
+                      questions; the default class.
+- support           — explicit request for a human operator, or an
+                      unambiguous choice of the operator option from the
+                      assistant's last menu.
+- no_rag            — operation on the visible history: repeat, shorten,
+                      translate, reformat the already-provided answer,
+                      or ask about the dialogue itself.
+
+
+ANNOTATION CONVENTIONS
+- Standalone "пока" / "до свидания" -> greeting; "вопросов больше нет",
+  "на этом всё" -> gratitude.
+- Polite opening ("Привет, ...", "Спасибо, а ...") does NOT override an
+  explicit work task in the same message.
+- On doubt between support/technical, pivot_table/technical, or
+  no_rag/technical -> choose technical.
+- On doubt between data_catalog and an explanation -> data_catalog with
+  `needs_clarification = true`.
+- "Оформи это таблицей" -> no_rag if the previous assistant answer
+  already contains all needed facts, otherwise pivot_table.
+- A negative form flips the intent: "не зови оператора, объясни ..."
+  -> technical; "Специалиста не подключайте" -> technical.
+
+
+CONTEXTUAL MINIMAL PAIRS (the same text, different history)
+- "Покажи ещё" after a catalog listing -> data_catalog
+- "Покажи ещё" after a topic offer     -> technical
+- "Вариант 2" after a menu with operator -> support
+- "Вариант 2" after a menu with explanations -> technical
+- "Оформи это таблицей" when the facts are already in history -> no_rag
+- "Оформи это таблицей" when only a future pivot was agreed -> pivot_table
+- "Когда она начинает действовать?" after an explicit date -> no_rag
+- "Когда она начинает действовать?" after a bare method name -> technical
+- "А за июль?" after a pivot for August -> pivot_table (new numbers needed)
+
+
+FAILURE MODES
+- Treating a short phrase as a keyword while ignoring context.
+- Confusing capabilities (about the assistant) with technical (about the
+  platform "Меридиан" or a product).
+- Confusing data_catalog (find sources) with pivot_table (build numbers),
+  or with technical (explain a metric).
+- False no_rag when the required fact is not in the visible history.
+- False support when the user only asked a technical question, or when
+  the word "оператор" appears inside a negation.
+- Short greetings like "пока" matching inside "пока таблицу" — check
+  word boundaries, not raw substrings.
+
+
+IMPLEMENTATION GUIDANCE
+- A simple keyword baseline is a perfectly acceptable starting point.
+- Prefer plain Python: lists of substrings, `re`, `str.lower()`.
+- Only `helper.py` may import from outside stdlib if necessary.
+- Keep the code short and readable — mutations should be able to change
+  small pieces without breaking the whole file.
+- The typical weak baseline uses a dictionary of keyword lists per class
+  plus a small context resolver for the minimal pairs above.
+- Return `{"intent": "technical", "needs_clarification": False}` when
+  no rule fires — `technical` is the default class.
+- `entrypoint()` must not take arguments. It reads examples itself via
+  `helper.load_examples()` and returns the full prediction dict.
+
+
+OUTPUT FORMAT
+
+Implement `def entrypoint():` with NO arguments that:
+- Calls `helper.load_examples()` to get the examples.
+- Uses ONLY `history` and `text` from each example.
+- Returns a dict: {example_id: {"intent": <label>,
+                               "needs_clarification": <bool>}}.
+- Uses only the standard library (plus numpy/scipy/re if needed).
+- Does not touch the filesystem at runtime.
+- Return type: dict[str, dict].
+
+REFERENCE EXAMPLES (for your reasoning only — the program does NOT read this)
+============================================================================
+The program makes predictions from `history` + `text` only. Below are
+randomly sampled examples WITH gold labels. Use them to find systematic
+mistakes. NEVER hardcode a specific text -> intent mapping into the
+program: the judge runs on unseen examples too.
+
+Format: (gold_intent) [role:content | role:content] text
+
+(data_catalog) [] Подбери наборы данных, где хранится ключ поездки trip_key.
+(no_rag) [A:Неизвестное значение отличается от подтверждённого нуля.] Переведи предыдущий ответ на английский.
+(capabilities) [] Расскажи о себе как о помощнике.
+(support) [] Позови оператора.
+(capabilities) [] Кто ты такой?
+(technical) [] Не зови оператора, объясни ошибку CHECKSUM_MISMATCH.
+(greeting) [] Здраствуйте!
+(pivot_table) [] Нужна сравнительная таблица сумм возвратов Зонтика за июнь и июль по покрытиям.
+(pivot_table) [] Сведи в таблицу потребление Облачного Сада по пулам за каждый день августа.
+(capabilities) [] С какими задачами к тебе обращаться?
+(gratitude) [A:Чистый объём равен исходному объёму минус возврат.] С формулой ясно, новых вопросов нет.
+(no_rag) [A:1. Сохраните ключ пакета. 2. Проверьте checksum. 3. Запишите время получения.] Удали из своего ответа последний пункт.
+(capabilities) [U:Расскажи, что ты умеешь. | A:Я помогаю работать с документацией и искать объекты данных.] А поиск по названию поля у тебя есть?
+(technical) [U:Что показал отчёт по Парусу? | A:В отчёте указан отрицательный вклад продукта в результат.] А почему он получился отрицательным?
+(technical) [A:Хотите, я объясню порядок восстановления пропущенного снимка?] Да.
+(support) [U:Не получается восстановить доступ. | A:Выберите: вариант 1 — ещё одна автоматическая проверка; вариант 2 — обращение к оператору.] Вариант 2.
+(no_rag) [U:Расскажи про куб RosinkaDaily. | A:Уточните, какую сторону его работы объяснить.] Какой куб я назвал в первом сообщении этой переписки?
+(pivot_table) [] Построй сводную выплат Ритма по месяцам и организациям за второй квартал.
+(data_catalog) [] Найди таблицы в учебном кластере Сад, относящиеся к Пергаменту.
+(greeting) [] Привет!
+(gratitude) [] Благодарность принята? Тогда на сегодня всё.
+(pivot_table) [U:Сделай сводную платежей. | A:Готова сводная: месяцы в строках, каналы в столбцах.] Поменяй местами строки и столбцы.
+(technical) [A:Могу рассказать, как назначают доступ к детализации Ритма. Хотите?] Хочу.
+(gratitude) [] Спасибо!
+(support) [] Пожалуйста, пригласи сотрудника поддержки в разговор.
+(data_catalog) [] Какие кубы есть по Росинке?
+(greeting) [A:Если появятся новые вопросы, напишите.] Я вернулся, привет
+(greeting) [] Хеллоу!
+(gratitude) [] спс, помогло
+(support) [A:Доступны самостоятельное исправление и обращение к человеку.] Выбираю обращение к человеку.
+(no_rag) [U:Расскажи о новой методике Искры. | A:Методика V2 Искры начинает действовать 1 апреля 2026 года.] Когда она начинает действовать?
+(data_catalog) [] Выведи объекты данных, которыми владеет команда Витрина.
+
+CRITICAL — SAME TEXT, DIFFERENT HISTORY -> DIFFERENT INTENT
+--------------------------------------------------------------------
+[U:Не получается восстановить доступ. | A:Выберите: вариант 1 — автопроверка; вариант 2 — оператор.]
+  "Вариант 2." -> support
+
+[A:По методике Росинки могу дать: вариант 1 — краткое объяснение; вариант 2 — подробный разбор.]
+  "Вариант 2." -> technical
+
+[A:Найдены PrismDaily и PrismDeals. Это первая часть списка; есть ещё объекты каталога.]
+  "Покажи ещё." -> data_catalog
+
+[A:Как устроен расчёт активности Искры? Мы обсудили порог. Могу показать обработку возвратов.]
+  "Покажи ещё." -> technical
+
+[A:Исходный объём — размер операции. Чистый объём — минус возврат.]
+  "Оформи это таблицей." -> no_rag
+
+[A:Могу получить эти числовые данные и построить сводную по указанным параметрам.]
+  "Оформи это таблицей." -> pivot_table
+
+[A:Методика V2 Искры начинает действовать 1 апреля 2026 года.]
+  "Когда она начинает действовать?" -> no_rag
+
+[A:У Искры есть методика V2 с обновлёнными правилами.]
+  "Когда она начинает действовать?" -> technical
+--------------------------------------------------------------------
+History is not optional. The SAME current text maps to DIFFERENT
+intents depending on the last assistant turn.
+
+NEGATIONS CHANGE THE INTENT
+--------------------------------------------------
+"Позови оператора."                       -> support
+"Не зови оператора, объясни ошибку."      -> technical
+"Специалиста не подключайте. Что делать...?" -> technical
+"Нет, спасибо."                           -> gratitude
+--------------------------------------------------
+
+POLITE OPENING DOES NOT OVERRIDE THE TASK
+--------------------------------------------------
+"Привет!"                                       -> greeting
+"Привет, почему не открывается отчёт Мозаики?" -> technical
+"Спасибо!"                                      -> gratitude
+"Спасибо, а сколько хранятся сообщения?"        -> technical
+--------------------------------------------------
