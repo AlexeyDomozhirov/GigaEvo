@@ -1,0 +1,1088 @@
+TASK DEFINITION – DIALOGUE INTENT CLASSIFICATION (8 CLASSES)
+============================================================================
+
+Challenge: Single-label classification of a user's intent from a short
+Russian-language dialogue for the assistant of the fictional "Meridian"
+platform (company "Arcadia"). The classifier must look at the current
+message together with the visible history and pick one of eight routing
+branches. The same short phrase in different dialogues can mean different
+intents.
+
+This is a long-running evolution. Your mutation should make the program
+slightly better. Read this whole document before editing.
+
+OBJECTIVE
+Implement `def entrypoint():` (no arguments) that returns a dict mapping
+example id -> prediction:
+    {
+        "<example_id>": {"intent": <label>, "needs_clarification": <bool>},
+        ...
+    }
+
+CONTRACT (must not break):
+1) `intent` is one of 8 labels:
+     greeting, capabilities, gratitude, data_catalog,
+     pivot_table, technical, support, no_rag
+2) `needs_clarification` is a boolean flag, allowed to be True ONLY when
+   `intent == "data_catalog"`. It marks genuine ambiguity between
+   "find catalog objects" and "explain a topic".
+3) Predictions must be produced ONLY from each example's `history` and
+   `text`. Fields `intent`, `needs_clarification`, `rationale`, `tags`,
+   `group_id`, `split` are forbidden as model input.
+4) `history` is a chronological list of {"role": "user"|"assistant",
+   "content": str}. The current user message is in `text` and is NOT
+   duplicated in `history`. Up to 3 previous user and 4 previous
+   assistant turns. Empty history is valid.
+5) Set `temperature=0.0` for reproducibility. Some residual
+   non-determinism may remain — the LLM API does not guarantee
+   byte-identical outputs. Do not rely on exact repetition.
+6) `entrypoint()` takes no arguments. It reads examples itself via
+   `helper.load_examples()`.
+7) Credentials come from the environment variable `GIGACHAT_CREDENTIALS`.
+   Do NOT print it, log it, pass it into the prompt, or hardcode it in
+   the file. Do NOT read it from disk.
+8) On any API or parse error, fall back to
+   {"intent": "technical", "needs_clarification": false}.
+   Never raise, never print, never skip an id.
+
+Output type: dict[str, dict]. No printing, no side effects, no file I/O.
+
+FITNESS: macro-F1 over the 8 classes. Each class weighs equally.
+Higher is better. Range [0, 1].
+
+is_valid = 1 when every prediction is structurally correct:
+- `intent` is one of the 8 labels,
+- `needs_clarification` is a bool and True only for `data_catalog`.
+Otherwise is_valid = 0.
+
+A wrong `intent` still counts as a valid prediction — it just lowers
+fitness. Invalid is reserved for malformed output, not for mistakes.
+
+
+============================================================================
+WHAT KIND OF PROGRAM YOU MUTATE
+============================================================================
+The program you receive is a Python wrapper around a GigaChat LLM call.
+Almost all classification quality comes from the TEXT of the SYSTEM
+prompt, not from the Python logic.
+
+Typical structure of such a program:
+  - imports (langchain-gigachat, langchain-core, pydantic, helper)
+  - a SYSTEM constant — the big Russian-language prompt
+  - a chain that sends SYSTEM + user message to GigaChat
+  - a parser that extracts {intent, needs_clarification} from the reply
+  - a `_normalize()` or similar function that validates the output
+  - `_predict_one(history, text)` — one API call
+  - `entrypoint()` — loops over examples
+
+The model (GigaChat) ALREADY KNOWS Russian, ALREADY understands what
+"привет", "спасибо", "оператор", "сводная" mean. You do NOT need to
+teach it vocabulary. You need to clarify AMBIGUOUS cases and MINIMAL
+PAIRS where context decides the class.
+
+Your main mutation surface is the SYSTEM prompt:
+  - class descriptions
+  - conventions and rules
+  - few-shot examples
+  - output format instructions
+
+
+============================================================================
+MUTATION POLICY — READ BEFORE EDITING
+============================================================================
+
+You are the mutation operator. You receive the current best program and
+this document. Your job is to make ONE THEMATIC improvement.
+
+RULES:
+
+1) ONE THEME PER MUTATION — NOT ONE LINE.
+   A "theme" is one failure mode you are fixing. Within that theme you
+   may make several related additions at once, because each mutation
+   costs 160 LLM calls to evaluate — small changes do not pay off.
+
+   GOOD thematic changes (each counts as ONE mutation):
+     - Fix context pairs end-to-end: add a short rule sentence about
+       "same text, different history" AND 3–4 few-shot examples for
+       the most confused pairs (Вариант 2, Покажи ещё, Оформи таблицей).
+     - Fix negation handling: add one rule sentence about negations
+       AND 2–3 few-shot examples for the "не зови оператора" family.
+     - Strengthen output format: rewrite the format section to strict
+       JSON AND add 1 example AND forbid markdown explicitly.
+     - Clarify a class boundary: add a 3–5 line block distinguishing
+       capabilities / technical / data_catalog AND 1–2 paired
+       few-shot examples.
+     - Add a decision tree for pivot_table vs data_catalog vs technical
+       in one block.
+
+   BAD "mutations" (still not allowed):
+     - Rewrite the whole SYSTEM prompt.
+     - Mix 3+ unrelated themes in one mutation (e.g. add examples for
+       greeting AND support AND no_rag at once). 3–4 examples for ONE
+       theme are fine and encouraged.
+     - Change Python logic AND the prompt in one mutation.
+     - Mix "fix format" and "fix negation" in one mutation.
+
+   Rule of thumb: if you cannot describe the change in one sentence
+   of the form "I am fixing X by doing Y", it is more than one theme.
+
+2) DO NOT TOUCH THE PYTHON LOGIC.
+   Keep imports, API calls, parsing, `_predict_one`, `entrypoint`,
+   `_normalize` as they are. If a Python change is truly necessary,
+   change one line and comment why. In 95% of mutations, only the
+   SYSTEM prompt text changes.
+
+3) DO NOT REWRITE THE PROMPT FROM SCRATCH.
+   Keep its sections: task definition, class list, conventions,
+   format rules, few-shot examples. Add to existing sections or
+   extend them. Do not restructure.
+
+4) LEVERAGE THE MODEL'S KNOWLEDGE.
+   Do NOT add vocabulary rules like "если слово привет то greeting".
+   GigaChat already knows what "привет" means. Add rules for
+   AMBIGUOUS cases only:
+     Good: "Вопрос «Ты умеешь искать витрины?» — capabilities,
+            потому что спрашивают о способности ассистента."
+     Bad:  "Слово витрин → data_catalog"
+
+5) NEVER HARDCODE a specific `text` -> `intent` mapping in the Python.
+   Bad:  if text == "Привет!": return "greeting"
+   Good: add a few-shot example for greeting to the SYSTEM prompt.
+
+6) PREFER GENERALISATION.
+   Few-shot examples must be REPRESENTATIVE of a class, not exact
+   test strings. Show patterns, not memorised lines.
+
+7) IF NO CLEAR THEME IS AVAILABLE, RETURN THE FILE UNCHANGED.
+   Each evaluation costs 160 GigaChat API calls. Do not waste them on
+   guesses. A no-op is better than a risky rewrite.
+
+8) DO NOT ADD EXTERNAL DEPENDENCIES.
+   Allowed imports: `langchain-gigachat`, `langchain-core`, `pydantic`,
+   `helper`, and `os` (only for reading `GIGACHAT_CREDENTIALS`).
+   Do NOT import `re`, `json`, `numpy`, `sklearn`, `torch`, or anything
+   else. The LLM parser already handles JSON extraction — do not add
+   regex post-processing.
+
+9) DO NOT USE FILESYSTEM AT RUNTIME.
+   `examples.json` does not exist in the sandbox. Use
+   `helper.load_examples()` only.
+
+10) KEEP THE SYSTEM PROMPT UNDER ~180 LINES.
+    The mutation budget is bigger than "one line", but do not bloat.
+    Shorter prompts are faster and cheaper per call.
+
+
+============================================================================
+HOW THIS WORKS
+============================================================================
+You are the mutation operator. On each call you receive:
+  - this document
+  - ONE program file (an LLM wrapper)
+
+Your job: improve that ONE file with ONE thematic change — usually in
+the SYSTEM prompt. Return the complete updated file.
+
+The mutation styles you will see:
+  - long Russian SYSTEM prompt with class descriptions
+  - few-shot examples inside the SYSTEM prompt
+  - a parsing/normalization layer to enforce output format
+  - optional fallback to `technical` on API errors
+
+Improve the prompt. Do not rewrite the wrapper.
+
+
+============================================================================
+AVAILABLE HELPERS FROM `helper.py`
+============================================================================
+- `LABELS`                  -> list of the 8 valid intent names (str)
+- `EMBEDDED_EXAMPLES`       -> str, all 160 examples (id, history, text)
+- `load_examples()`         -> list[dict] parsed from EMBEDDED_EXAMPLES
+- `last_assistant(history)` -> str, last assistant turn, lowercased,
+                               or "" if there is no assistant turn
+
+`load_examples()` returns a list of dicts:
+    {"id": str, "history": [...], "text": str}
+Only `id`, `history`, `text` are present. No gold, no split, no group_id.
+
+`history` is a chronological list of {"role": "user"|"assistant",
+"content": str}. The current user message is ALWAYS in `text`, never
+in `history`. Empty history is valid.
+
+`entrypoint()` must iterate over `load_examples()` and return
+{id: {"intent": ..., "needs_clarification": ...}}.
+
+`examples.json` does NOT exist in the sandbox. Do not open it.
+Do not use `open()`, `json.load()`, `pd.read_json()`, `Path.read_text()`.
+Everything comes from `helper.load_examples()`.
+
+The judge stores gold labels outside the sandbox. The program cannot
+see them and must never attempt to reconstruct them.
+
+
+============================================================================
+HINT FROM THE OPERATOR (optional — may be stale)
+============================================================================
+This block is filled by the human operator and may lag behind the
+current state. Do NOT treat it as authoritative. Use PRIORITY OF
+FIXES as the primary guide; use this hint only if it matches what
+you see in the code.
+
+Observed behaviour with the current prompt (Light model, ~0.71):
+  - greeting, gratitude usually fine
+  - support and no_rag often confused with technical
+  - context pairs (Вариант 2, Покажи ещё, Оформи таблицей) fragile
+  - needs_clarification often set wrong
+
+If these look irrelevant to the file you receive, ignore them and
+work from PRIORITY OF FIXES instead.
+
+
+============================================================================
+THE EIGHT INTENTS — DETAILED
+============================================================================
+
+--- greeting ---
+Hello or standalone neutral farewell, no work task.
+Positive:
+  "Привет!", "Здравствуйте.", "Доброе утро", "Хай 👋", "Хеллоу!"
+  "Пока", "До свидания.", "Увидимся!", "До встречи в чате"
+  "Я вернулся, привет", "Снова здравствуйте!"
+  "Приветствую команду помощников", "Всем доброго дня!"
+Boundary:
+  "Привет, почему не открывается отчёт?" -> technical (task overrides)
+  "Спасибо!" -> gratitude (thanks, not hello)
+  "Пока таблицу не строй" -> NOT greeting (пока = while, not bye)
+  "Здравствуй, Меридиан-помощник" -> greeting (name in address, no question)
+
+--- capabilities ---
+Question about the assistant itself, its identity, its abilities.
+Positive:
+  "Что ты умеешь?", "Перечисли свои возможности.", "Кто ты такой?"
+  "Расскажи о себе как о помощнике."
+  "С какими задачами к тебе обращаться?", "В чём ты можешь мне помочь?"
+  "Ты умеешь искать витрины в каталоге?"
+  "Какие языки ответа ты поддерживаешь?"
+  "Чем именно ты полезен сотруднику Аркадии?"
+  "Ты кто: справочный помощник или редактор отчётов?"
+  "Какие задачи ты не берёшь на себя?"
+Boundary:
+  "Что такое платформа Меридиан?" -> technical (about platform)
+  "Что ты знаешь о Призме?" -> technical (about product, not self)
+  "Построй сводную по Мозаике" -> pivot_table (concrete action)
+  "Ты можешь строить сводные или только отвечаешь текстом?"
+      -> capabilities (asking about ability, no concrete task)
+  Key signal: "ты", "тебя", "тебе", "твои", "твоя", "твоих",
+  "помощник", "ассистент" + question about functions/abilities.
+
+--- gratitude ---
+Thanks, confirmation that help is finished, "no further questions".
+Positive:
+  "Спасибо!", "спс, помогло", "Благодарю за помощь."
+  "Большое спасибо за объяснение!", "Вопросов больше нет."
+  "На этом всё, спасибо.", "Мне всё ясно."
+  "Теперь разобрался, благодарю.", "Нет, спасибо." (after offer)
+  "Больше ничего не нужно.", "Всё получилось, спасибо тебе."
+  "Понял разницу. Спасибо.", "С формулой ясно, новых вопросов нет."
+  "Отлично, этот вопрос закрыт."
+  "Разъяснение получил, дополнительных вопросов не осталось."
+  "Благодарность принята? Тогда на сегодня всё."
+  "Спасибо за терпение. Мне больше ничего не требуется."
+Boundary:
+  "Спасибо, а сколько хранятся сообщения?" -> technical (new question)
+  "Спасибо!" -> gratitude, not greeting
+  "Пока" -> greeting, not gratitude (per convention)
+
+--- data_catalog ---
+Find tables, marts, cubes, dashboards, views, or any data object;
+continue a catalog listing.
+Positive:
+  "Найди витрины, в которых есть event_key."
+  "Покажи таблицы с canonical_client_key."
+  "Какие кубы есть по Росинке?"
+  "Найди инфосервисы по Лавке."
+  "Где лежат дашборды по конверсии Мозаики?"
+  "Есть ли view с полем territory_code?"
+  "Выведи объекты данных, которыми владеет команда Витрина."
+  "Найди таблицы в учебном кластере Сад, относящиеся к Пергаменту."
+  "Найди витрны где есть refund_value" (typo)
+  "Не объясняй формулу, просто найди витрину с net_income."
+  "Покажи ещё." (after catalog listing)
+  "Следующие объекты, пожалуйста."
+  "Мне нужен список таблиц по Парусу, без выгрузки самих чисел."
+  "Подбери наборы данных, где хранится ключ поездки trip_key."
+  "Какие представления каталога содержат compute_pool?"
+  "Дальше." (after catalog listing)
+Boundary:
+  "Построй сводную по витрине X" -> pivot_table (build, not find)
+  "Где найти методику расчёта активности Искры?" -> technical
+      (methodology, not a data object)
+  "Как рассчитывается чистый доход Лавки?" -> technical
+  "Что у вас по кубу Мозаики?" -> data_catalog with
+      needs_clarification=true (ambiguous: catalog vs explain)
+  Key signal: "витрин", "таблиц", "куб", "дашборд", "инфосервис",
+  "представлени", "объект данных", "набор данных" + search verb
+  (найди/покажи/выведи/подбери/где/есть ли).
+
+--- pivot_table ---
+Explicit request to build or edit a numeric table with dimensions,
+filters, or aggregation.
+Positive:
+  "Построй сводную выплат Ритма по месяцам и организациям."
+  "Сделай таблицу оборота Лавки по каналам за август."
+  "Покажи средний остаток Росинки по целям накопления за июль."
+  "Выведи количество активных клиентов Искры по неделям."
+  "Добавь фильтр: только территория Северная." (edit existing pivot)
+  "Убери разрез по датам."
+  "Поменяй местами строки и столбцы."
+  "Перестрой её с кварталами в столбцах."
+  "Оформи это таблицей." (when only future pivot agreed)
+  "А за июль?" (after pivot for August)
+  "Не зови оператора, просто построй срез возвратов."
+  "табличку оборта по каналам за май сделай" (typos)
+  "Отсортируй сводную по сумме дохода от большего к меньшему."
+  "Добавь к ней средний размер операции."
+  "Сгруппируй количество событий Пергамента за 30 дней по маршрутам."
+  "По витрине Мозаики построй срез заказов по способам исполнения."
+  "Сделай кросс-таблицу числа клиентов."
+  "Нужна сравнительная таблица сумм возвратов Зонтика."
+  "Оставь в сводной только операции с частичным возвратом."
+  "Сведи в таблицу потребление Облачного Сада по пулам."
+Boundary:
+  "Как рассчитывается чистый доход?" -> technical (methodology)
+  "Найди таблицу выплат" -> data_catalog (find, not build)
+  "Оформи это таблицей" -> depends on history:
+      if facts already present -> no_rag
+      if only future pivot agreed -> pivot_table
+  Key signal: "построй", "сделай", "сводн", "сгруппируй", "срез",
+  "кросс", "сведи в таблиц", "перестрой", "поменяй", "добавь фильтр",
+  "убери разрез", "отсортируй".
+  IMPORTANT: this class MUST be checked BEFORE data_catalog.
+  Otherwise "Построй сводную по витрине X" -> wrong class.
+
+--- technical ---
+Explanations, methodology, errors, access, product questions.
+THE DEFAULT CLASS.
+Positive:
+  "Что такое платформа Меридиан?"
+  "Какие возможности у платформы Меридиан?"
+  "Что ты знаешь о Призме?"
+  "Как рассчитывается чистый доход Лавки?"
+  "Где найти методику расчёта активности Искры?"
+  "Привет, почему не открывается отчёт Мозаики?" (polite + task)
+  "Спасибо, а сколько хранятся сообщения источника?"
+  "Не зови оператора, объясни ошибку CHECKSUM_MISMATCH."
+  "отчот не грузится, помоги разобраться"
+  "А почему он получился отрицательным?" (after report)
+  "Какой регламент описывает закрытие месяца для Пергамента?"
+  "Специалиста не подключайте. Что делать, если watermark не обновился?"
+  "А какие там корректировки?" (about named product)
+  "Когда она начинает действовать?" (only name, no date in history)
+  "Да." (after "Хотите, я объясню порядок восстановления?")
+  "Хочу." (after "Могу рассказать, как назначают доступ?")
+  "Пункт Б." (after menu with explanations)
+Boundary:
+  "Что ты умеешь?" -> capabilities (about assistant, not platform)
+  "Не зови оператора, объясни ошибку" -> technical (negation)
+  Any ambiguous case NOT clearly one of the other 7 -> technical.
+
+--- support ---
+Explicit request for a human operator, or an unambiguous choice of the
+operator option from the assistant's last menu.
+Positive:
+  "Позови оператора."
+  "Переключи меня на оператора поддержки."
+  "Мне нужен живой специалист."
+  "Хочу поговорить с человеком, а не с ботом."
+  "Свяжи меня с поддержкой."
+  "Пожалуйста, пригласи сотрудника поддержки в разговор."
+  "Не повторяй инструкцию, лучше позови оператора." (negation is
+      about repeating, not about operator)
+  "Автоматический вариант не подходит. Соедини со специалистом."
+  "Вариант 2." (after menu "автопроверка / оператор")
+  "Второе." (after menu "авто / специалист")
+  "Зови специалиста." (after offer of specialist)
+  "Да, позови оператора."
+  "Нужен человек, чтобы вместе разобрать ошибку загрузки."
+  "аператора пжлста" (typos)
+  "Передай мой вопрос о Росинке живому консультанту."
+  "Можно позвать специалиста поддержки Меридиана?"
+  "Хочу продолжить разбор со сотрудником поддержки."
+  "Дальше нужен специалист, подключите его, пожалуйста."
+  "Выбираю обращение к человеку."
+  "Пункт Б." (after menu "автоповтор / оператор")
+Boundary:
+  "Не зови оператора, объясни ошибку" -> technical (negation)
+  "Специалиста не подключайте" -> technical (negation)
+  "Вариант 2." (after menu with explanations) -> technical
+      (context matters!)
+  Key signal: "оператор", "специалист", "поддержк", "живой",
+  "человек", "консультант", "сотрудник" + intent to connect.
+  CHECK NEGATION FIRST: if "не зови", "не подключай",
+  "специалиста не", "оператора не" are present -> NOT support.
+
+--- no_rag ---
+Operation on the visible history: repeat, shorten, translate,
+reformat the already-provided answer, or ask about the dialogue itself.
+ALL required facts must be present in the visible history.
+Positive:
+  "Повтори последний ответ."
+  "Что ты ответил выше?"
+  "Сократи это до одного предложения."
+  "Сделай предыдущий ответ короче, без новых деталей."
+  "Переведи предыдущий ответ на английский."
+  "А теперь тот же ответ по-русски."
+  "Оформи это таблицей." (when all facts are already in history)
+  "Сведи эти определения в список."
+  "Когда она начинает действовать?" (date in history)
+  "Про какой продукт мы говорили?" (product named in history)
+  "Какой куб я назвал в первом сообщении этой переписки?"
+  "Какой код ошибки я прислал?"
+  "Выпиши только упомянутые тобой поля."
+  "Удали из своего ответа последний пункт."
+  "Напиши это простыми словами, смысл не меняй."
+  "Сколько пунктов было в твоём списке?"
+  "Собери краткое резюме нашего разговора."
+  "Какие два варианта ты только что предложил?"
+  "Поменяй в своём пояснении слово «факт» на «событие»."
+  "Верни только дату, которую ты написал."
+Boundary:
+  "Когда она начинает действовать?" (only method name in history)
+      -> technical (date is NOT present)
+  "А за июль?" (after pivot for August) -> pivot_table
+      (new numbers needed, not in history)
+  "А какие там корректировки?" -> technical (info not in history)
+  Key signal: "повтори", "сократи", "переведи", "выпиши", "удали",
+  "перефразируй", "резюме разговора", "что ты ответил".
+  CRITICAL: if at least one required fact is missing from history ->
+  use technical. FALSE POSITIVE no_rag is the most expensive mistake:
+  the system skips knowledge search and answers without the needed fact.
+
+
+============================================================================
+ANNOTATION CONVENTIONS
+============================================================================
+
+1) FAREWELL vs GRATITUDE
+   Standalone "пока" / "до свидания" -> greeting
+   "вопросов больше нет", "на этом всё", "мне всё ясно" -> gratitude
+   Mixed ambiguous farewells are excluded from the dataset.
+
+2) POLITE OPENING DOES NOT OVERRIDE A TASK
+   "Привет, почему не открывается отчёт?" -> technical
+   "Спасибо, а сколько хранятся сообщения?" -> technical
+   If a greeting or thanks word co-occurs with a work marker
+   (почему / как / что такое / найди / покажи / построй / ошибка /
+   методика / срок / регламент / расскажи / объясни), return the work
+   class, not greeting/gratitude.
+
+3) ON DOUBT — CHOOSE technical
+   Support vs technical -> technical
+   pivot_table vs technical -> technical
+   no_rag vs technical -> technical
+   False support triggers an unnecessary human handoff.
+   False no_rag skips knowledge search and answers without facts.
+   Both are worse than a false technical (which just does extra search).
+
+4) CATALOG vs EXPLANATION AMBIGUITY
+   If unclear whether the user wants catalog objects or an explanation:
+   -> data_catalog with needs_clarification = true
+
+5) "Оформи это таблицей"
+   If the previous assistant answer already contains all needed facts
+   -> no_rag
+   If only a future pivot was agreed (no numbers yet)
+   -> pivot_table
+
+6) NEGATIONS FLIP THE INTENT
+   "Не зови оператора, объясни ..." -> technical
+   "Специалиста не подключайте. Что делать ...?" -> technical
+   "Нет, спасибо." -> gratitude (declining more help, not support)
+
+
+============================================================================
+PRIORITY OF FIXES (work top-down)
+============================================================================
+This is the authoritative guide for what to improve. Work from the top.
+
+Each priority is ONE THEME, not one line. When you tackle a priority,
+add a full, coherent block for it: a short rule sentence plus 2–4
+few-shot examples that together cover the theme. Do not split one
+theme across multiple mutations.
+
+Example of tackling priority 1 (context pairs) in ONE mutation:
+  - add one sentence to SYSTEM: "Одна и та же фраза может означать
+    разные интенты в зависимости от последней реплики ассистента."
+  - add 3 few-shot examples: "Вариант 2" (support and technical),
+    "Покажи ещё" (data_catalog and technical), "Оформи это таблицей"
+    (no_rag and pivot_table).
+
+That is ONE mutation. It is coherent, and the effect is measurable
+in a single evaluation.
+
+--- 1) CONTEXT PAIRS (highest value) ---
+Does the prompt teach the model that the SAME text maps to DIFFERENT
+intents depending on the last assistant turn? Check for these pairs:
+  "Вариант 2" / "Второе" / "Пункт Б":
+    -> support   if last assistant offered "оператор/специалист"
+    -> technical if last assistant offered "объяснение/методика"
+  "Покажи ещё" / "Дальше":
+    -> data_catalog if last assistant listed catalog objects
+    -> technical    if last assistant offered a new topic
+  "Оформи это таблицей":
+    -> no_rag       if facts already in history
+    -> pivot_table  if only a future pivot was agreed
+  "Когда она начинает действовать?":
+    -> no_rag       if a date is present in history
+    -> technical    if only a name/method is present
+  "А за <месяц>?":
+    -> pivot_table  (new numbers are needed)
+
+If two pairs are already covered, add a third. Do it as ONE thematic
+mutation (rule + 3–4 examples).
+
+--- 2) NEGATIONS ---
+Does the prompt explicitly cover these?
+  "Не зови оператора, объясни ошибку."          -> technical
+  "Специалиста не подключайте. Что делать?"     -> technical
+  "Не повторяй инструкцию, лучше позови ..."     -> support
+  "Нет, спасибо."                                -> gratitude
+If not, add ONE thematic block: one rule sentence + 2–3 examples.
+
+--- 3) GREETING / GRATITUDE + REAL WORK TASK ---
+Does the prompt say that a greeting or thanks word plus a work question
+returns the work class?
+  "Привет, почему не открывается отчёт?" -> technical
+  "Спасибо, а сколько хранятся сообщения?" -> technical
+If not, add ONE thematic block: one rule sentence + 1–2 examples.
+
+--- 4) capabilities vs technical ---
+Does the prompt clearly distinguish:
+  "Что ты умеешь?" -> capabilities (about assistant)
+  "Что такое платформа Меридиан?" -> technical (about platform)
+  "Ты умеешь искать витрины?" -> capabilities (ability, not action)
+If any of these boundaries is missing, add ONE thematic block with a
+3–5 line boundary description + 1 paired example.
+
+--- 5) data_catalog vs pivot_table vs technical ---
+Does the prompt distinguish:
+  data_catalog = find sources ("найди витрин", "где лежат дашборды")
+  pivot_table  = build/edit numbers ("построй сводную", "срез", "фильтр")
+  technical    = explain ("как рассчитывается", "почему", "методика")
+If not, add ONE thematic block with a decision-tree sentence and
+2 examples.
+
+--- 6) no_rag that has no obvious transformation verb ---
+Does the prompt cover questions about the dialogue itself?
+  "Какой код ошибки я прислал?"            -> no_rag
+  "Про какой продукт мы говорили?"         -> no_rag
+  "Сколько пунктов было в твоём списке?"   -> no_rag
+  "Верни только дату, которую ты написал." -> no_rag
+If not, add ONE thematic block: one rule sentence + 2–3 examples.
+
+--- 7) needs_clarification ---
+Does the prompt clearly say: true ONLY for data_catalog AND only when
+the request is ambiguous between "find object" and "explain topic"?
+If not, add ONE thematic block with the rule + one true example and
+one false counterexample.
+
+--- 8) OUTPUT FORMAT ---
+Does the prompt force a single line of JSON, forbidding markdown, code
+fences, and extra text? If not, rewrite the format section to strict
+JSON in ONE thematic block. This improves `is_valid`.
+
+If all 8 items are already handled, return the file UNCHANGED.
+
+
+============================================================================
+ALL 160 TRAINING EXAMPLES (grouped by intent)
+============================================================================
+These are the ONLY examples the program will be evaluated against.
+Use them to find patterns for few-shot examples. Do NOT hardcode them.
+
+Format per line:
+    (id) [role:content | role:content] text
+Empty history is shown as [].
+
+--- greeting (20) ---
+(0001) [] Привет!
+(0002) [] привееет
+(0003) [] Здравствуйте.
+(0004) [] Здраствуйте!
+(0005) [] Доброе утро
+(0006) [] Добрый вечер, ассистент
+(0007) [] Хай 👋
+(0008) [] Хеллоу!
+(0009) [A:Если появятся новые вопросы, напишите.] Я вернулся, привет
+(0010) [U:На сегодня вопросов нет. | A:Хорошего дня.] Снова здравствуйте!
+(0011) [] Пока
+(0012) [] До свидания.
+(0013) [] Приветствую команду помощников
+(0014) [] Всем доброго дня!
+(0015) [] Здравствуй, Меридиан-помощник
+(0016) [] Привет, это опять я 👋
+(0017) [] Моё почтение!
+(0018) [] Доброго времени суток.
+(0019) [] До встречи в чате
+(0020) [] Увидимся!
+
+--- capabilities (20) ---
+(0021) [] Что ты умеешь?
+(0022) [] Перечисли свои возможности.
+(0023) [] Кто ты такой?
+(0024) [] Расскажи о себе как о помощнике.
+(0025) [] С какими задачами к тебе обращаться?
+(0026) [] В чём ты можешь мне помочь?
+(0027) [] Ты умеешь искать витрины в каталоге?
+(0028) [U:Расскажи, что ты умеешь. | A:Я помогаю работать с документацией и искать объекты данных.] А поиск по названию поля у тебя есть?
+(0029) [] Ты можешь строить сводные или только отвечаешь текстом?
+(0030) [] Есть у тебя режим работы с числовыми таблицами?
+(0031) [] Какие языки ответа ты поддерживаешь?
+(0032) [] Ты работаешь только с текстом или понимаешь вопросы про отчёты?
+(0033) [] что ваще может этот ассистент
+(0034) [] какие у тибя функции?
+(0035) [U:Я изучаю возможности помощника. | A:Могу рассказать о доступных функциях.] Не строй пока таблицу. Скажи, умеешь ли ты это в принципе.
+(0036) [] Чем именно ты полезен сотруднику Аркадии?
+(0037) [] Открой описание того, что умеет помощник.
+(0038) [] Где посмотреть перечень твоих навыков?
+(0039) [] Ты кто: справочный помощник или редактор отчётов?
+(0040) [] Какие задачи ты не берёшь на себя?
+
+--- gratitude (20) ---
+(0041) [] Спасибо!
+(0042) [] спс, помогло
+(0043) [] Благодарю за помощь.
+(0044) [] Большое спасибо за объяснение!
+(0045) [] Вопросов больше нет.
+(0046) [] На этом всё, спасибо.
+(0047) [] Мне всё ясно.
+(0048) [] Теперь разобрался, благодарю.
+(0049) [A:Нужно ли ещё что-нибудь пояснить?] Нет, спасибо.
+(0050) [A:Могу помочь с ещё одним вопросом.] Больше ничего не нужно.
+(0051) [] Вы мне помогли, спасибо.
+(0052) [] Всё получилось, спасибо тебе.
+(0053) [U:Чем отличается объём от дохода? | A:Объём описывает операции; доход — начисленную плату сервиса.] Понял разницу между объёмом и доходом. Спасибо.
+(0054) [A:Чистый объём равен исходному объёму минус возврат.] С формулой ясно, новых вопросов нет.
+(0055) [] Спасибооо 🙏
+(0056) [] Благадарю, выручил!
+(0057) [] Отлично, этот вопрос закрыт.
+(0058) [] Разъяснение получил, дополнительных вопросов не осталось.
+(0059) [] Благодарность принята? Тогда на сегодня всё.
+(0060) [] Спасибо за терпение. Мне больше ничего не требуется.
+
+--- support (20) ---
+(0061) [] Позови оператора.
+(0062) [] Переключи меня на оператора поддержки.
+(0063) [] Мне нужен живой специалист.
+(0064) [] Хочу поговорить с человеком, а не с ботом.
+(0065) [] Свяжи меня с поддержкой.
+(0066) [] Пожалуйста, пригласи сотрудника поддержки в разговор.
+(0067) [] Не повторяй инструкцию, лучше позови оператора.
+(0068) [] Автоматический вариант не подходит. Соедини со специалистом.
+(0069) [U:Не получается восстановить доступ. | A:Выберите: вариант 1 — ещё одна автоматическая проверка; вариант 2 — обращение к оператору.] Вариант 2.
+(0070) [A:Могу: первое — повторить автоматическое решение; второе — позвать специалиста поддержки.] Второе.
+(0071) [A:Могу попробовать автоматическое решение или обратиться к специалисту.] Зови специалиста.
+(0072) [A:Могу помочь самостоятельно или начать обращение к поддержке.] Да, позови оператора.
+(0073) [] Нужен человек, чтобы вместе разобрать ошибку загрузки.
+(0074) [] аператора пжлста
+(0075) [] Передай мой вопрос о Росинке живому консультанту.
+(0076) [] Можно позвать специалиста поддержки Меридиана?
+(0077) [A:Я описал доступные автоматические проверки.] Хочу продолжить разбор со сотрудником поддержки.
+(0078) [] Дальше нужен специалист, подключите его, пожалуйста.
+(0079) [A:Доступны самостоятельное исправление и обращение к человеку.] Выбираю обращение к человеку.
+(0080) [A:Пункт А — автоматический повтор. Пункт Б — оператор поддержки.] Пункт Б.
+
+--- data_catalog (20) ---
+(0081) [] Найди витрины, в которых есть event_key.
+(0082) [] Покажи таблицы с canonical_client_key.
+(0083) [] Какие кубы есть по Росинке?
+(0084) [] Найди инфосервисы по Лавке.
+(0085) [] Где лежат дашборды по конверсии Мозаики?
+(0086) [] Есть ли view с полем territory_code?
+(0087) [] Выведи объекты данных, которыми владеет команда Витрина.
+(0088) [] Найди таблицы в учебном кластере Сад, относящиеся к Пергаменту.
+(0089) [] найди витрны где есть refund_value
+(0090) [] Не объясняй формулу, просто найди витрину с net_income.
+(0091) [U:Найди витрины по Призме. | A:Найдены PrismDaily и PrismDeals. Это первая часть списка; есть ещё объекты каталога.] Покажи ещё.
+(0092) [A:Показаны первые пять таблиц Ритма. Следующая часть выдачи доступна.] Следующие объекты, пожалуйста.
+(0093) [] Мне нужен список таблиц по Парусу, без выгрузки самих чисел.
+(0094) [] Где найти информацию по кубам Росинки?    [needs_clarification=true]
+(0095) [] Мне нужны сведения о витринах Меридиана.  [needs_clarification=true]
+(0096) [] Покажи информацию о таблицах Мозаики.    [needs_clarification=true]
+(0097) [] Подбери наборы данных, где хранится ключ поездки trip_key.
+(0098) [] Какие представления каталога содержат compute_pool?
+(0099) [U:Какие таблицы есть для Бастиона? | A:Показал первую часть каталога. Могу вывести следующие найденные таблицы.] Дальше.
+(0100) [] Что у вас по кубу Мозаики?              [needs_clarification=true]
+
+--- pivot_table (20) ---
+(0101) [] Построй сводную выплат Ритма по месяцам и организациям за второй квартал.
+(0102) [] Сделай таблицу оборота Лавки по каналам за август.
+(0103) [] Покажи средний остаток Росинки по целям накопления за июль.
+(0104) [] Выведи количество активных клиентов Искры по неделям в виде сводной.
+(0105) [U:Построй оборот Мозаики по территориям. | A:Сводная по всем территориям построена.] Добавь фильтр: только территория Северная.
+(0106) [A:Построена сводная: строки — продукты и даты, столбцы — каналы, значение — объём.] Убери разрез по датам.
+(0107) [U:Сделай сводную платежей. | A:Готова сводная: месяцы в строках, каналы в столбцах.] Поменяй местами строки и столбцы.
+(0108) [A:Сводная дохода Паруса построена с месяцами в столбцах.] Перестрой её с кварталами в столбцах.
+(0109) [U:Мне нужен оборот Лавки по каналам за август. | A:Могу получить эти числовые данные и построить сводную по указанным параметрам.] Оформи это таблицей.
+(0110) [U:Построй объём Кометы по маршрутам за август. | A:За август: внутренний маршрут — 1200 АРК, межплатформенный — 800 АРК.] А за июль?
+(0111) [] Не зови оператора, просто построй срез возвратов по продуктам за август.
+(0112) [] табличку оборта по каналам за май сделай
+(0113) [A:Сводная дохода по продуктам готова, сейчас строки отсортированы по названию.] Отсортируй сводную по сумме дохода от большего к меньшему.
+(0114) [A:В сводной Искры сейчас есть число операций и общий объём по каналам.] Добавь к ней средний размер операции.
+(0115) [] Сгруппируй количество событий Пергамента за последние 30 дней по маршрутам подписания.
+(0116) [] По витрине Мозаики построй срез заказов по способам исполнения.
+(0117) [] Сделай кросс-таблицу числа клиентов: тарифы по строкам, регионы по столбцам.
+(0118) [] Нужна сравнительная таблица сумм возвратов Зонтика за июнь и июль по покрытиям.
+(0119) [A:Построена сводная операций Искры: в ней есть события без возврата, с частичным и полным возвратом.] Оставь в сводной только операции с частичным возвратом.
+(0120) [] Сведи в таблицу потребление Облачного Сада по пулам за каждый день августа.
+
+--- technical (20) ---
+(0121) [] Что такое платформа Меридиан?
+(0122) [] Какие возможности у платформы Меридиан?
+(0123) [] Что ты знаешь о Призме?
+(0124) [] Как рассчитывается чистый доход Лавки?
+(0125) [] Где найти методику расчёта активности Искры?
+(0126) [] Привет, почему не открывается отчёт Мозаики?
+(0127) [] Спасибо, а сколько хранятся сообщения источника?
+(0128) [] Не зови оператора, объясни ошибку CHECKSUM_MISMATCH.
+(0129) [] отчот не грузится, помоги разобраться
+(0130) [U:Как устроен расчёт активности Искры? | A:Мы обсудили порог. Могу ещё показать, как обрабатываются поздние возвраты.] Покажи ещё.
+(0131) [A:По методике Росинки могу дать: вариант 1 — краткое объяснение; вариант 2 — подробный разбор условий.] Вариант 2.
+(0132) [A:Могу объяснить: первое — что такое исходный объём; второе — как учитывать частичный возврат.] Второе.
+(0133) [U:Расскажи о новой методике Искры. | A:У Искры есть методика V2 с обновлёнными правилами активности.] Когда она начинает действовать?
+(0134) [A:Хотите, я объясню порядок восстановления пропущенного снимка?] Да.
+(0135) [A:Могу рассказать, как назначают доступ к детализации Ритма. Хотите?] Хочу.
+(0136) [U:О каком продукте идёт речь? | A:Мы обсуждаем Бастион.] А какие там корректировки?
+(0137) [A:По Облачному Саду: пункт А — краткое описание; пункт Б — подробная методика учёта потребления.] Пункт Б.
+(0138) [U:Что показал отчёт по Парусу? | A:В отчёте указан отрицательный вклад продукта в результат.] А почему он получился отрицательным?
+(0139) [] Какой регламент описывает закрытие месяца для Пергамента?
+(0140) [] Специалиста не подключайте. Что делать, если пакет принят, а watermark не обновился?
+
+--- no_rag (20) ---
+(0141) [A:Порог проверяется до округления. Полный возврат исключает активность.] Повтори последний ответ.
+(0142) [A:Для счёта клиента используется canonical_client_key.] Что ты ответил выше?
+(0143) [A:Исходный объём показывает размер операции. Возврат хранится отдельно положительной суммой. Чистый объём равен исходному минус возврат.] Сократи это до одного предложения.
+(0144) [A:Общий итог клиентов пересчитывается по уникальным ключам на объединении сегментов, поэтому он может быть меньше суммы сегментных итогов.] Сделай предыдущий ответ короче, без новых деталей.
+(0145) [A:Неизвестное значение отличается от подтверждённого нуля.] Переведи предыдущий ответ на английский.
+(0146) [A:A complete refund excludes the event from the active customer metric.] А теперь тот же ответ по-русски.
+(0147) [A:Исходный объём — размер операции до возврата. Чистый объём — исходный объём минус возврат.] Оформи это таблицей.
+(0148) [A:Manifest подтверждает состав поставки. Watermark показывает границу подтверждённой полноты.] Сведи эти определения в список.
+(0149) [U:Расскажи о новой методике Искры. | A:Методика V2 Искры начинает действовать 1 апреля 2026 года.] Когда она начинает действовать?
+(0150) [U:Меня интересует продукт Зонтик. | A:Обсудим Зонтик.] Про какой продукт мы говорили?
+(0151) [U:Расскажи про куб RosinkaDaily. | A:Уточните, какую сторону его работы объяснить.] Какой куб я назвал в первом сообщении этой переписки?
+(0152) [U:В логе моего учебного примера написано REVISION_CONFLICT. | A:Понял, вы указали ошибку ревизии.] Какой код ошибки я прислал?
+(0153) [A:Проверьте event_key, revision и source_checksum. Эти три поля нужны для разбора повтора.] Выпиши только упомянутые тобой поля.
+(0154) [A:1. Сохраните ключ пакета. 2. Проверьте checksum. 3. Запишите время получения.] Удали из своего ответа последний пункт.
+(0155) [A:Отсутствие подтверждённого снимка означает неизвестное наблюдение и не эквивалентно нулевому остатку.] Напиши это простыми словами, смысл не меняй.
+(0156) [A:1. Дата факта. 2. Версия методики. 3. Область доступа.] Сколько пунктов было в твоём списке?
+(0157) [U:Что считать клиентом? | A:Уникальный canonical_client_key. | U:А два события одного клиента? | A:Это две операции и один клиент.] Собери краткое резюме нашего разговора без дополнительных сведений.
+(0158) [A:Могу сократить ваш текст либо оформить его маркированным списком.] Какие два варианта ты только что предложил?
+(0159) [A:Каждый факт имеет устойчивый ключ и номер ревизии.] Поменяй в своём пояснении слово «факт» на «событие».
+(0160) [A:В нашем синтетическом примере выпуск отмечен датой 28 августа 2026 года.] Верни только дату, которую ты написал, без пояснений.
+
+
+============================================================================
+MINIMAL PAIRS — the same text, different history, different intent
+============================================================================
+STUDY THESE CAREFULLY. These are the strongest signal that context
+matters. The most valuable few-shot examples for the prompt come from
+these pairs.
+
+[A:Выберите: вариант 1 — автопроверка; вариант 2 — оператор.]
+    "Вариант 2."                            -> support
+
+[A:Могу дать: вариант 1 — краткое объяснение; вариант 2 — подробный разбор.]
+    "Вариант 2."                            -> technical
+
+[A:Найдены PrismDaily и PrismDeals. Есть ещё объекты каталога.]
+    "Покажи ещё."                           -> data_catalog
+
+[A:Мы обсудили порог. Могу показать обработку возвратов.]
+    "Покажи ещё."                           -> technical
+
+[A:Исходный объём — размер операции. Чистый — минус возврат.]
+    "Оформи это таблицей."                  -> no_rag
+
+[A:Могу получить числа и построить сводную по параметрам.]
+    "Оформи это таблицей."                  -> pivot_table
+
+[A:Методика V2 Искры начинает действовать 1 апреля 2026.]
+    "Когда она начинает действовать?"       -> no_rag
+
+[A:У Искры есть методика V2 с обновлёнными правилами.]
+    "Когда она начинает действовать?"       -> technical
+
+[A:За август: внутренний маршрут — 1200 АРК, межплатформенный — 800 АРК.]
+    "А за июль?"                            -> pivot_table
+
+
+============================================================================
+NEGATIONS — a negative form flips the intent
+============================================================================
+"Позови оператора."                                  -> support
+"Не зови оператора, объясни ошибку."                 -> technical
+"Специалиста не подключайте. Что делать ...?"        -> technical
+"Не повторяй инструкцию, лучше позови оператора."     -> support
+"Нет, спасибо."                                      -> gratitude
+"Не объясняй формулу, просто найди витрину."         -> data_catalog
+"Не строй пока таблицу. Скажи, умеешь ли ты это?"    -> capabilities
+
+Rule: if "не" appears in the same clause as an operator/specialist
+word AND the request is to EXPLAIN, the intent is technical. If the
+negation is about something ELSE ("не повторяй инструкцию, лучше
+позови") — the intent stays support.
+
+
+============================================================================
+POLITE OPENINGS — task wins over greeting/thanks
+============================================================================
+"Привет!"                                       -> greeting
+"Привет, почему не открывается отчёт Мозаики?"  -> technical
+"Спасибо!"                                      -> gratitude
+"Спасибо, а сколько хранятся сообщения?"        -> technical
+"Здравствуйте, помогите разобраться с ошибкой." -> technical
+
+
+============================================================================
+GOOD MUTATION EXAMPLES (for an LLM-based program)
+============================================================================
+Each example below is a FULL thematic change — the kind that pays off
+within one evaluation. Notice that each includes a rule AND examples.
+
+Example A — Fix context pairs end-to-end (priority 1):
+  Add to SYSTEM:
+    "Одна и та же короткая фраза может означать разные интенты в
+     зависимости от последней реплики ассистента. Всегда смотри на
+     историю перед выбором intent."
+
+  Add three few-shot pairs:
+    История: A: Выберите: вариант 1 — автопроверка; вариант 2 — оператор.
+    Сообщение: Вариант 2.
+    Ответ: {"intent": "support", "needs_clarification": false}
+
+    История: A: Могу дать: вариант 1 — краткое; вариант 2 — подробное.
+    Сообщение: Вариант 2.
+    Ответ: {"intent": "technical", "needs_clarification": false}
+
+    История: A: Найдены PrismDaily и PrismDeals. Есть ещё объекты каталога.
+    Сообщение: Покажи ещё.
+    Ответ: {"intent": "data_catalog", "needs_clarification": false}
+
+    История: A: Мы обсудили порог. Могу показать обработку возвратов.
+    Сообщение: Покажи ещё.
+    Ответ: {"intent": "technical", "needs_clarification": false}
+  Reason: the context-pair family is the biggest source of errors.
+  One coherent fix covers several top confusions at once.
+
+Example B — Fix negation handling end-to-end (priority 2):
+  Add to SYSTEM:
+    "Отрицание меняет интент. Если пользователь говорит «не зови
+     оператора, объясни ...» — это technical. Если отрицание
+     относится к чему-то другому («не повторяй инструкцию, лучше
+     позови оператора») — это support."
+
+  Add two few-shot examples:
+    Сообщение: Не зови оператора, объясни ошибку CHECKSUM_MISMATCH.
+    Ответ: {"intent": "technical", "needs_clarification": false}
+
+    Сообщение: Не повторяй инструкцию, лучше позови оператора.
+    Ответ: {"intent": "support", "needs_clarification": false}
+  Reason: negation errors cost both fitness and is_valid.
+
+Example C — Clarify a class boundary (priority 4):
+  Add to SYSTEM a short block:
+    "Различай:
+     - capabilities: вопрос о возможностях ассистента
+       («Что ты умеешь?», «Ты умеешь искать витрины?»)
+     - technical: вопрос о платформе или продукте
+       («Что такое платформа Меридиан?», «Что ты знаешь о Призме?»)
+     Если пользователь спрашивает о СПОСОБНОСТИ ассистента — это
+     capabilities, даже если упоминается объект данных."
+
+  Add one paired example showing the boundary.
+  Reason: capabilities ↔ technical is a common confusion.
+
+Example D — Strengthen output format (priority 8):
+  Replace the format line in SYSTEM with a strict block:
+    "Ответ — СТРОГО ОДНА строка валидного JSON. Без markdown, без
+     ```json, без текста до или после.
+     Формат: {"intent": "<label>", "needs_clarification": <bool>}"
+  Reason: improves `is_valid` and reduces parser fallbacks.
+
+Example E — Tighten needs_clarification (priority 7):
+  Add to SYSTEM:
+    "needs_clarification=true ТОЛЬКО для data_catalog и ТОЛЬКО
+     если запрос можно понять и как поиск объекта, и как объяснение
+     темы. Во всех остальных случаях — false."
+  Add one example with needs_clarification=true and one counterexample
+  with false.
+  Reason: is_valid depends on this flag being correct.
+
+
+============================================================================
+BAD MUTATION EXAMPLES
+============================================================================
+These HURT fitness or waste evaluations.
+
+Bad A — rewrite the whole SYSTEM prompt from scratch.
+Bad B — mix 3+ unrelated themes in one mutation (e.g. add examples for
+        greeting AND support AND no_rag at once). 3–4 examples for ONE
+        theme are fine and encouraged.
+Bad C — change the API call or parser logic.
+Bad D — add rules like "if слово привет → greeting" (GigaChat knows).
+Bad E — hardcode test strings as rules.
+Bad F — add sklearn, embeddings, or any other API.
+Bad G — read `examples.json` from disk.
+Bad H — set `temperature` above 0.2 (non-determinism hurts).
+Bad I — turn the LLM program into a regex program or vice versa.
+Bad J — add `re` or `json` imports to post-process the LLM reply;
+        the parser already handles JSON extraction.
+
+
+============================================================================
+IMPLEMENTATION GUIDANCE
+============================================================================
+- The SYSTEM prompt is your main mutation surface.
+- Few-shot examples go inside the SYSTEM prompt, not in the human
+  message template. Keep them stable.
+- Place each new few-shot example LAST among examples for its class
+  (recency matters for LLMs).
+- `_normalize()` and `_fallback()` are safety nets. Leave them as
+  they are; they protect `is_valid` from model hallucinations
+  (e.g. class "farewell" not in LABELS).
+- Use `temperature=0.0`. Do not raise it.
+- `max_tokens` should stay 40–200: enough for JSON, not more.
+- If you add a rule as a sentence, keep it short: one line.
+- Preserve the signature: `def entrypoint():` with NO arguments.
+- Preserve allowed imports only:
+  `langchain-gigachat`, `langchain-core`, `pydantic`, `helper`, and
+  `os` (only for `GIGACHAT_CREDENTIALS`).
+
+
+============================================================================
+MUTATION TARGET
+============================================================================
+You receive exactly ONE program file — an LLM wrapper. Mutate ONLY
+that file. Do not reference other programs by name, do not import
+them, do not assume a specific structure — read the file you were
+given and work with its actual shape.
+
+
+============================================================================
+OUTPUT FORMAT
+============================================================================
+Return the COMPLETE updated version of the file you received.
+
+The file must:
+- import only from `langchain-gigachat`, `langchain-core`, `pydantic`,
+  `helper`, and `os` (for `GIGACHAT_CREDENTIALS` only)
+- define `entrypoint()` with no arguments
+- return dict[str, dict]
+- not touch the filesystem at runtime
+- use `temperature=0.0` in the LLM call
+- change as little as possible compared to the input — one thematic
+  prompt change per mutation
+- keep the SYSTEM prompt under ~180 lines
+
+If no clear fix is suggested, return the file UNCHANGED.
+
+
+============================================================================
+PLATEAU MODE — when to switch from small fixes to experiments
+============================================================================
+The standard workflow (fix one item from PRIORITY OF FIXES) gives
+diminishing returns once the prompt already handles most items 1-7.
+At that point you may enter AGGRESSIVE MODE for ONE mutation.
+
+--- Two triggers, use EITHER ---
+
+TRIGGER A — fitness threshold.
+  If the harness shows you a `fitness` value for the current program,
+  and that value is at or above 0.75, you MAY enter AGGRESSIVE MODE.
+  Because regular mutations are already large (theme-sized), the
+  aggressive mode here means introducing a NEW PROMPT MECHANISM
+  (chain-of-thought scaffold, decision tree, self-check), not just
+  more examples.
+
+TRIGGER B — prompt maturity (use only if fitness is not visible).
+  Read the file. Tick what its SYSTEM prompt already has:
+
+    [ ] class descriptions for all 8 intents
+    [ ] explicit JSON output format with strict rules
+    [ ] at least 4 few-shot examples
+    [ ] at least 2 context-pair examples (Вариант 2, Покажи ещё,
+        Оформи таблицей, Когда она начинает действовать)
+    [ ] negation rule for support/technical
+    [ ] polite-opening rule for greeting/thanks + task
+    [ ] needs_clarification rule for data_catalog
+    [ ] explicit "technical is the default" sentence
+    [ ] explicit "same text, different history" statement
+
+  If 6 or more boxes are ticked — the prompt is mature.
+  You MAY enter AGGRESSIVE MODE.
+
+If neither trigger fires — stay in CONSERVATIVE MODE and make a
+normal thematic fix from PRIORITY OF FIXES.
+
+--- What you may do in AGGRESSIVE MODE (still ONE conceptual change) ---
+
+"One change" here means ONE addition that introduces a new prompt
+mechanism, even if it is several lines. The rest of the file stays
+as it is.
+
+1) CHAIN-OF-THOUGHT SCAFFOLD.
+   Add a short paragraph instructing the model to think step by step
+   before deciding, but still emit only the final JSON. For example:
+     "Сначала определи, есть ли в истории меню с оператором. Потом
+      определи, есть ли в истории нужный факт (дата, число, имя).
+      Только затем выбери intent. Ответь только JSON."
+   One such scaffold per mutation.
+
+2) CALIBRATION RULES FOR needs_clarification.
+   Add a precise algorithm for when to set the flag true, with
+   examples and counterexamples in one block.
+
+3) SELF-CHECK RULE.
+   Add a final instruction: "Прежде чем ответить, проверь: если
+   intent=data_catalog и needs_clarification=true, ты уверен, что
+   запрос можно понять и как поиск объекта, и как объяснение темы?
+   Если нет — поставь false."
+
+4) CATEGORICAL REFRAME.
+   Replace an implicit definition with an explicit decision tree:
+     "1. Есть ли в тексте запрос на построение чисел?
+          Да → pivot_table
+          Нет → идём дальше.
+      2. Есть ли запрос на поиск объекта каталога?
+          Да → data_catalog
+          Нет → идём дальше.
+      ..."
+
+5) EXAMPLE GROUPS.
+   Replace a single example for a class with a small GROUP of two
+   tightly related examples that together show a boundary
+   (e.g. capabilities vs technical in one paired example).
+
+6) REORDERING.
+   Move the most ambiguous/conflated examples to the END of the
+   few-shot list, so they are closer to the user query at inference
+   time.
+
+--- What is STILL forbidden in AGGRESSIVE MODE ---
+
+- Do NOT rewrite the file from scratch.
+- Do NOT remove prompt sections that already work.
+- Do NOT hardcode specific test texts.
+- Do NOT add external dependencies.
+- Do NOT touch the filesystem.
+- Do NOT change `entrypoint()` signature.
+- Do NOT exceed ~250 lines total in the file.
+- Do NOT exceed ~200 lines in the SYSTEM prompt (relaxed from 180).
+
+--- If you entered AGGRESSIVE MODE and nothing helps ---
+
+If you try an aggressive idea and you are not reasonably sure it will
+improve fitness, return the file UNCHANGED. Each evaluation costs
+160 LLM calls. A no-op is better than a risky rewrite.
+
+The next mutation will re-check the trigger.
