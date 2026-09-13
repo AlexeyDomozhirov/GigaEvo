@@ -1,10 +1,8 @@
-import os
-from pathlib import Path
 from langchain_gigachat import GigaChat
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from helper import load_examples, LABELS
+from helper import load_examples, LABELS, get_credentials, esc_braces, get_llm
 from pydantic import BaseModel, Field
 
 class Intent(BaseModel):
@@ -76,15 +74,10 @@ greeting, capabilities, gratitude, data_catalog, pivot_table, technical, support
 """
 
 
-llm = GigaChat(
-    credentials=Path("/home/alexei/python/math/gigaevo-core/key").read_text(encoding="utf-8").replace("\n", ""),
-    verify_ssl_certs=False,
-    model="GigaChat-3-Lightning",
-    temperature=0,
-)
+llm = get_llm()#DONT CHANGE THIS!!!
 
 chain = ChatPromptTemplate.from_messages([
-    ("system", "Classify the user intent. Reply with JSON."),
+    ("system", esc_braces(SYSTEM)),
     ("human", "History:\n{history}\n\nMessage: {text}"),
 ]) | llm.with_structured_output(Intent)
 
